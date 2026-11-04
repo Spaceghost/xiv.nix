@@ -66,12 +66,18 @@
       XivWayfinder = { };
       XivLantern = { };
       XivPiano = { };
+      # Testing-only releases (versioned asset pinned in pins.json).
+      XivHud = { };
+      "XivHud.Journal" = { };
+      XivRug = { };
       # No source repo or release yet: keep loading the local builds.
       XivLinkpearl = { source = "local"; path = "/home/jack/linkpearl-build/devplugin"; };
       XivWorkshop = { source = "local"; path = "/home/jack/dalamud-plugins/XivWorkshop"; };
     };
 
-    thirdPartyRepos = [ { url = "https://spacegho.st/mods/ffxiv/plugins.json"; enable = true; } ];
+    # Off: every plugin it serves is declared above and loads from a local copy.
+    # Repo installs of declared plugins get moved to xivnix/backups on apply.
+    thirdPartyRepos = [ { url = "https://spacegho.st/mods/ffxiv/plugins.json"; enable = false; } ];
 
     thirdPartyPlugins = [
       "AdaptiveHud" "BetterFriendList" "Browsingway" "CharacterPanelRefined" "ChatProximity"

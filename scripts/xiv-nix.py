@@ -8,6 +8,7 @@
   xiv doctor                what is installed, what loads, which GPU/CPUs, what is missing
   xiv install-session       (sudo) add the "FFXIV" gamescope session to the login screen
   xiv gpu-id                vendor:device of the card the game would use
+  xiv clone [DIR]           git clone every pinned plugin's repo into DIR (default ~/Projects)
 
 Lower level:
   xiv-nix apply MANIFEST [--wait] [--dry-run] [--verbose]
@@ -16,7 +17,7 @@ Lower level:
   xiv-nix release NAME      drop that override, back to the managed copy
   xiv-nix pins [--flake DIR] [--testing] [NAME ...]   bump pins.json only
 """
-import base64, datetime, glob, hashlib, json, os, shlex, shutil, subprocess, sys, tempfile, time, urllib.request
+import base64, datetime, glob, hashlib, json, os, re, shlex, shutil, subprocess, sys, tempfile, time, urllib.request
 
 DEV_TYPE = "System.Collections.Generic.List`1[[Dalamud.Configuration.DevPluginLocationSettings, Dalamud]], System.Private.CoreLib"
 DEV_ITEM = "Dalamud.Configuration.DevPluginLocationSettings, Dalamud"
@@ -191,6 +192,22 @@ def save_config(path, raw, cfg, data_dir, what):
     write_atomic(path, json.dumps(cfg, indent=2, ensure_ascii=False))
 
 
+def retire_repo_installs(data_dir, names):
+    """A repo-installed copy of a declared plugin would load next to the
+    local one (same InternalName). Move it into backups; its settings in
+    pluginConfigs/ are untouched."""
+    for name in sorted(names):
+        src = os.path.join(data_dir, "installedPlugins", name)
+        if not os.path.isdir(src):
+            continue
+        stamp = datetime.datetime.now().strftime("%Y%m%dT%H%M%S")
+        dest = os.path.join(data_dir, "xivnix", "backups", "installedPlugins", f"{name}.{stamp}")
+        log(f"{name}: repo install moved aside -> {dest}")
+        if not DRY:
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.move(src, dest)
+
+
 def apply_dalamud(m, plugin_dirs):
     """Managed entries are Nickname "xiv.nix:<Name>". Any other entry for a
     declared plugin's DLL is your dev override and wins, so working on a
@@ -236,6 +253,7 @@ def apply_dalamud(m, plugin_dirs):
         vals.append({"$type": REPO_ITEM, "Url": url, "IsEnabled": en})
     repos["$values"] = vals
 
+    retire_repo_installs(data_dir, plugin_dirs)
     save_config(path, raw, cfg, data_dir, f"{len(plugin_dirs) - len(overrides)} managed dev plugins, {len(overrides)} dev overrides, {len(by_url)} managed repos")
     if not DRY and not adopted >= set(m["plugins"]):
         os.makedirs(os.path.dirname(adopted_path), exist_ok=True)
@@ -642,6 +660,20 @@ def cmd_update(flake, testing, names):
     pins = json.load(open(pins_path))
     for name in names or sorted(pins):
         pin = pins[name]
+        if "asset" in pin:  # testing-only release: newest <Name>-<version>.zip under the same tag
+            rel = gh_json(f"https://api.github.com/repos/{pin['repo']}/releases/tags/{pin['tag']}")
+            pat = re.compile(re.escape(name) + r"-(\d+(?:\.\d+)*)\.zip")
+            found = [(tuple(map(int, mm.group(1).split("."))), a["name"]) for a in rel["assets"] if (mm := pat.fullmatch(a["name"]))]
+            asset = max(found)[1]
+            if asset == pin["asset"]:
+                print(f"{name:16} {asset} (current)")
+                continue
+            url = f"https://github.com/{pin['repo']}/releases/download/{pin['tag']}/{asset}"
+            with urllib.request.urlopen(url, timeout=120) as r:
+                digest = hashlib.sha256(r.read()).digest()
+            pins[name] = {**pin, "asset": asset, "hash": "sha256-" + base64.b64encode(digest).decode()}
+            print(f"{name:16} {pin['asset']} -> {asset}")
+            continue
         if testing:
             rels = [r for r in gh_json(f"https://api.github.com/repos/{pin['repo']}/releases?per_page=20")
                     if not r["draft"] and any(a["name"] == "latest.zip" for a in r["assets"])]
@@ -659,6 +691,22 @@ def cmd_update(flake, testing, names):
         print(f"{name:16} {pin['tag']} -> {tag}")
     write_atomic(pins_path, json.dumps(pins, indent=2) + "\n")
     return 0
+
+
+def cmd_clone(flake, dest):
+    """Every pinned plugin's source, side by side, for `xiv-nix dev`."""
+    pins = json.load(open(os.path.join(flake, "pins.json")))
+    os.makedirs(dest, exist_ok=True)
+    rc = 0
+    for repo in sorted({p["repo"] for p in pins.values()}):
+        d = os.path.join(dest, repo.split("/")[1])
+        if os.path.isdir(os.path.join(d, ".git")):
+            print(f"{repo:36} {d} (present)")
+            continue
+        r = subprocess.run(["git", "clone", "-q", f"https://github.com/{repo}.git", d])
+        print(f"{repo:36} {d}" + ("" if r.returncode == 0 else " FAILED"))
+        rc |= r.returncode
+    return rc
 
 
 def main(argv):
@@ -685,6 +733,11 @@ def main(argv):
         return cmd_update(flake, testing, rest)
     if cmd == "doctor":
         return cmd_doctor(rest[0] if rest else default_manifest)
+    if cmd == "clone" and len(rest) <= 1:
+        flake = os.path.expanduser("~/Projects/xiv.nix")
+        if os.path.exists(default_manifest):
+            flake = json.load(open(default_manifest))["flake"]["dir"]
+        return cmd_clone(flake, os.path.expanduser(rest[0] if rest else "~/Projects"))
     m = json.load(open(default_manifest))
     if cmd == "launch":
         return cmd_launch(default_manifest, rest)

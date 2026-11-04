@@ -8,7 +8,7 @@ FFXIV on Linux as a Home Manager module: XIVLauncher, the Dalamud config, and yo
 | --- | --- |
 | XIVLauncher | Flatpak by default (`launcher.kind = "flatpak"`): installs `dev.goats.xivlauncher` if it is missing and merges `[Environment]` into the user flatpak override. `kind = "nix"` uses `pkgs.xivlauncher` instead. |
 | `launcher.ini` | Only the keys in `launcher.settings` are enforced. Everything else is left as XIVLauncher wrote it. |
-| Your plugins | `source = "release"`: the `latest.zip` from the GitHub release pinned in `pins.json`. It is fetched into the Nix store and copied to `<dataDir>/xivnix/plugins/<Name>`. `source = "local"`: load your own dev build from `path`. Both are registered as Dalamud dev-plugin locations named `xiv.nix:<Name>`. |
+| Your plugins | `source = "release"`: the `latest.zip` from the GitHub release pinned in `pins.json` (or, for testing-only releases, the versioned `asset` the pin names, e.g. `XivHud-0.1.0.3.zip`). It is fetched into the Nix store and copied to `<dataDir>/xivnix/plugins/<Name>`. `source = "local"`: load your own dev build from `path`. Both are registered as Dalamud dev-plugin locations named `xiv.nix:<Name>`. |
 | Third-party repos | `ThirdRepoList` entries by URL. |
 | Third-party plugins | Dalamud installs and auto-updates these itself. `thirdPartyPlugins` is the expected list, and `xiv doctor` names the missing ones. |
 
@@ -70,7 +70,8 @@ xiv.nix never fights your dev loop:
 - **Use your own build:** `xiv dev XivPiano ~/xiv-piano-build/devplugin` registers it. A location you add yourself in `/xlsettings` → Experimental works the same way. That entry wins over the pinned release on every later switch, and Dalamud hot-reloads it each time you rebuild.
 - **Go back to the release:** `xiv release XivPiano` drops the override and restores the pinned release.
 - **Toggles stick:** turning a managed location on or off in game is kept across switches.
-- **Repo copies are untouched:** Dalamud keeps auto-updating anything installed from a repo (`installedPlugins/`). xiv.nix doesn't touch those.
+- **No repo copies of your plugins:** a repo install of a declared plugin (`installedPlugins/<Name>`) would load next to the local copy, so apply moves it to `<dataDir>/xivnix/backups/installedPlugins/`. Its settings in `pluginConfigs/` stay. Third-party plugins are not touched.
+- **All the sources:** `xiv clone [DIR]` clones every repo in `pins.json` into `DIR` (default `~/Projects`), skipping ones already there.
 - **Switching during play:** a switch while the game or launcher is running queues itself as the transient user unit `xiv-nix-pending`. It applies 15 s after the game closes, once Dalamud's exit-time save is done. See `journalctl --user -u xiv-nix-pending`.
 - **First switch only:** the first switch after a plugin is declared "adopts" it. Dev locations from before xiv.nix are dropped once, so the managed copy takes over. After that, any location you add for the plugin counts as your override.
 
