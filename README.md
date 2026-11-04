@@ -42,7 +42,7 @@ After `update`, commit `pins.json` and run `switch` again. `nix flake update` bu
   curl -fsSL https://install.determinate.systems/nix | sh -s -- install ostree
   ```
 - **Other distros:** use the same installer without `ostree`.
-- **NixOS:** use the flake's `homeManagerModules.default` from your own config.
+- **NixOS:** use the flake's `homeModules.default` from your own config.
 
 ## Status
 

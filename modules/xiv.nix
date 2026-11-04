@@ -11,7 +11,7 @@ let
   cfg = config.programs.xiv;
   inherit (lib) mkOption mkEnableOption mkIf types;
 
-  releasePkgs = pkgs.callPackage ../pkgs/plugins.nix { inherit pins; };
+  releasePkgs = import ../pkgs/plugins.nix { inherit (pkgs) lib stdenvNoCC fetchurl unzip; inherit pins; };
   xiv-nix = pkgs.callPackage ../pkgs/xiv-nix.nix { };
 
   pluginType = types.submodule ({ name, ... }: {

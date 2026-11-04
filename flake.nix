@@ -16,31 +16,31 @@
       pins = builtins.fromJSON (builtins.readFile ./pins.json);
     in
     {
-      homeManagerModules.default = import ./modules/xiv.nix { inherit pins; };
-      homeManagerModules.xiv = self.homeManagerModules.default;
+      homeModules.default = import ./modules/xiv.nix { inherit pins; };
+      homeModules.xiv = self.homeModules.default;
 
       packages = forAll (pkgs:
-        let plugins = pkgs.callPackage ./pkgs/plugins.nix { inherit pins; };
+        let plugins = import ./pkgs/plugins.nix { inherit (pkgs) lib stdenvNoCC fetchurl unzip; inherit pins; };
         in plugins // {
           xiv-nix = pkgs.callPackage ./pkgs/xiv-nix.nix { };
-          default = self.packages.${pkgs.system}.xiv-nix;
+          default = self.packages.${pkgs.stdenv.hostPlatform.system}.xiv-nix;
         });
 
       apps = forAll (pkgs: {
-        default = { type = "app"; program = "${self.packages.${pkgs.system}.xiv-nix}/bin/xiv-nix"; };
+        default = { type = "app"; program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.xiv-nix}/bin/xiv-nix"; };
       });
 
-      # Bazzite alienware box. Rebuild: nix run .#switch  (or home-manager switch --flake .#jack@alienware)
+      # Bazzite alienware box. Rebuild: home-manager switch --flake .#jack@alienware
       homeConfigurations."jack@alienware" = home-manager.lib.homeManagerConfiguration {
         pkgs = nixpkgs.legacyPackages.x86_64-linux;
-        modules = [ self.homeManagerModules.default ./hosts/alienware.nix ];
+        modules = [ self.homeModules.default ./hosts/alienware.nix ];
       };
 
       checks = forAll (pkgs: {
         alienware = self.homeConfigurations."jack@alienware".activationPackage;
         plugins = pkgs.linkFarm "xiv-plugins"
           (nixpkgs.lib.mapAttrsToList (name: path: { inherit name path; })
-            (pkgs.callPackage ./pkgs/plugins.nix { inherit pins; }));
+            (import ./pkgs/plugins.nix { inherit (pkgs) lib stdenvNoCC fetchurl unzip; inherit pins; }));
       });
     };
 }
