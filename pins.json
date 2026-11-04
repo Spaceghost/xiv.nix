@@ -1,0 +1,10 @@
+{
+  "GhosttyDalamud": { "repo": "Spaceghost/ghostty-dalamud", "tag": "v0.3.2", "hash": "sha256-/YTiA7U7SRw/pMplJyy5LlhXQDAUaqzFiw6UbuS6/ok=" },
+  "Almanac": { "repo": "Spaceghost/almanac-dalamud", "tag": "v0.2.1", "hash": "sha256-r6xNZ67BBbNB4WiR3RPRbpL4Ccf1c8++JP5ERDfOMyQ=" },
+  "XivMcp": { "repo": "Spaceghost/xivmcp-dalamud", "tag": "v0.1.1", "hash": "sha256-4HBSFy8ckzRq5lm7BBdFK9cWS8NmcYhs7zdQM9wIsoc=" },
+  "XivDesktop": { "repo": "Spaceghost/xivdesktop-dalamud", "tag": "v1.0.2", "hash": "sha256-/2TwchT6stCwCsMWRPSwF9fVRYInqQ+OdSJPzs/qtfc=" },
+  "XivArcade": { "repo": "Spaceghost/xivarcade-dalamud", "tag": "v0.2.0", "hash": "sha256-blNeLaLNMjy+FOANXm4bguA30hpAfdkbEoX7da5pHQs=" },
+  "XivWayfinder": { "repo": "Spaceghost/xivwayfinder-dalamud", "tag": "v0.1.0", "hash": "sha256-tF9C/mGGszUsLc5lWbepvQBOVjzTJNiDWX78UYZeKe0=" },
+  "XivLantern": { "repo": "Spaceghost/xivlantern-dalamud", "tag": "v0.1.0", "hash": "sha256-OBx7NjkK8ffXJjsgy2HgbM++H3vrH3Sp/fZnN3FbGUo=" },
+  "XivPiano": { "repo": "Spaceghost/xivpiano-dalamud", "tag": "v0.1.2", "hash": "sha256-QLCYL4wYT3Ov3WKokeZZMspSfvfGcBdfoktd2zl22jI=" }
+}
