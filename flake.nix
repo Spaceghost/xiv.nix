@@ -27,7 +27,7 @@
         });
 
       apps = forAll (pkgs: {
-        default = { type = "app"; program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.xiv-nix}/bin/xiv-nix"; };
+        default = { type = "app"; program = "${self.packages.${pkgs.stdenv.hostPlatform.system}.xiv-nix}/bin/xiv"; };
       });
 
       # Bazzite alienware box. Rebuild: home-manager switch --flake .#jack@alienware

@@ -1,11 +1,20 @@
-"""xiv-nix: apply a programs.xiv manifest, check a machine, refresh release pins.
+"""xiv: FFXIV on Nix. Everything that starts the game goes through `xiv launch`.
 
+  xiv                       play (same as xiv launch)
+  xiv launch [ARGS...]      XIVLauncher on the preferred GPU, pinned to the configured CPUs
+  xiv gamescope             the same, full screen inside a nested gamescope
+  xiv switch                rebuild this machine from the flake (home-manager switch)
+  xiv update [--auto]       pull, bump plugin pins + flake.lock, switch, commit, push
+  xiv doctor                what is installed, what loads, which GPU/CPUs, what is missing
+  xiv install-session       (sudo) add the "FFXIV" gamescope session to the login screen
+  xiv gpu-id                vendor:device of the card the game would use
+
+Lower level:
   xiv-nix apply MANIFEST [--wait] [--dry-run] [--verbose]
   xiv-nix doctor [MANIFEST]
-  xiv-nix launch [ARGS...]  start XIVLauncher on the preferred GPU, pinned to the configured CPUs
   xiv-nix dev NAME DIR      load your own build of NAME from DIR (kept across switches)
   xiv-nix release NAME      drop that override, back to the managed copy
-  xiv-nix update [--flake DIR] [--testing] [NAME ...]
+  xiv-nix pins [--flake DIR] [--testing] [NAME ...]   bump pins.json only
 """
 import base64, datetime, glob, hashlib, json, os, shlex, shutil, subprocess, sys, tempfile, time, urllib.request
 
@@ -380,6 +389,8 @@ def launch_plan(m):
             notes.append(f"gpu {name} ({addr})")
             if gpu.get("offload") == "mesa":
                 env["DRI_PRIME"] = "pci-" + addr.replace(":", "_").replace(".", "_")
+        elif gpu.get("strict"):
+            raise SystemExit(f"xiv: none of {prefer} is present and gpu.strict is set; not launching (xiv doctor)")
         else:
             env["DXVK_FILTER_DEVICE_NAME"] = ""  # none present: clear any stale override, let DXVK choose
             notes.append(f"gpu: none of {prefer} present, DXVK picks")
@@ -412,6 +423,109 @@ def cmd_launch(manifest_path, args):
     return 1
 
 
+def gpu_id(m):
+    hit = pick_gpu(m.get("gpu", {}).get("prefer", []))
+    if not hit:
+        return None
+    d = f"/sys/bus/pci/devices/{hit[1]}"
+    return f"{open(d + '/vendor').read().strip()[2:]}:{open(d + '/device').read().strip()[2:]}"
+
+
+def cmd_gamescope(m, args):
+    gid = gpu_id(m)
+    argv = ["gamescope", "-f"]
+    if gid:
+        argv += ["--prefer-vk-device", gid]
+    gs = m.get("gamescope", {})
+    if gs.get("output"):
+        argv += ["--prefer-output", gs["output"]]
+    argv += [*gs.get("args", []), "--", m["self"], "launch", *args]
+    log("gamescope: " + " ".join(argv))
+    os.execvp("gamescope", argv)
+
+
+def run(argv, cwd=None, check=True):
+    vlog("$ " + " ".join(argv))
+    return subprocess.run(argv, cwd=cwd, check=check)
+
+
+def hm_switch(m):
+    f = m["flake"]
+    argv = ["home-manager", "switch", "-b", "xivnix-bak", "--flake", f"{f['dir']}#{f['attr']}"]
+    if not shutil.which("home-manager"):
+        argv = ["nix", "run", "home-manager", "--", *argv[1:]]
+    return run(argv, check=False).returncode
+
+
+def cmd_switch(m):
+    return hm_switch(m)
+
+
+def git(d, *a, check=True, capture=False):
+    return subprocess.run(["git", "-C", d, *a], check=check, capture_output=capture, text=True)
+
+
+def cmd_upgrade(m, auto):
+    """pull -> bump pins + flake.lock -> switch -> commit + push. Any failure
+    restores pins.json/flake.lock, so the machine and the repo never disagree."""
+    d = m["flake"]["dir"]
+    files = ["pins.json", "flake.lock"]
+    dirty = [l[3:] for l in git(d, "status", "--porcelain", capture=True).stdout.splitlines()]
+    if any(f not in files for f in dirty):
+        if auto:
+            log(f"{d} has uncommitted changes ({', '.join(dirty)}); skipping unattended update")
+            return 1
+        log(f"note: {d} has uncommitted changes; only pins.json and flake.lock will be committed")
+    if git(d, "remote", capture=True).stdout.strip() and not dirty:
+        if git(d, "pull", "--ff-only", "-q", check=False).returncode:
+            log("git pull --ff-only failed; resolve by hand")
+            return 1
+    try:
+        cmd_update(d, False, [])
+        run(["nix", "flake", "update"], cwd=d)
+    except Exception as e:
+        log(f"update failed: {e}")
+        git(d, "checkout", "--", *files, check=False)
+        return 1
+    changed = git(d, "status", "--porcelain", "--", *files, capture=True).stdout.strip()
+    if not changed:
+        log("everything already current")
+        return hm_switch(m) if not auto else 0
+    if hm_switch(m):
+        log("switch failed; reverting pins.json and flake.lock")
+        git(d, "checkout", "--", *files, check=False)
+        hm_switch(m)
+        return 1
+    git(d, "add", "--", *files)
+    git(d, "commit", "-q", "-m", "xiv: update plugin pins and flake.lock", "--", *files)
+    if m["flake"].get("push") and git(d, "remote", capture=True).stdout.strip():
+        if git(d, "push", "-q", check=False).returncode:
+            log("committed, but push failed; run git push in " + d)
+    log("updated and switched")
+    return 0
+
+
+def cmd_install_session(m):
+    exe = m["session"]["exec"]
+    entry = ("[Desktop Entry]\nType=Application\nName=FFXIV\n"
+             "Comment=gamescope running XIVLauncher and FINAL FANTASY XIV only; exits to the login screen when the game closes\n"
+             f"Exec={exe}\nTryExec={exe}\nDesktopNames=FFXIV\n")
+    dest = "/usr/local/share/wayland-sessions/ffxiv.desktop"
+    if os.path.exists(dest) and open(dest).read() == entry:
+        log(f"{dest} already installed")
+        return 0
+    fd, tmp = tempfile.mkstemp(prefix="xiv-session.", suffix=".desktop")
+    with os.fdopen(fd, "w") as f:
+        f.write(entry)
+    os.chmod(tmp, 0o644)
+    log(f"installing {dest} (needs sudo)")
+    rc = subprocess.run(["sudo", "install", "-D", "-m", "0644", tmp, dest]).returncode
+    os.unlink(tmp)
+    if rc == 0:
+        log("done: pick FFXIV from the gear menu on the login screen")
+    return rc
+
+
 # ---- doctor ----------------------------------------------------------------
 
 def cmd_doctor(manifest_path):
@@ -431,6 +545,12 @@ def cmd_doctor(manifest_path):
     if chosen == "":
         print("gpu           ! no preferred card present; DXVK picks")
     print(f"cpu pin       {','.join(map(str, cpus)) if cpus else 'all'}")
+    if m.get("session", {}).get("enable"):
+        ok = os.path.exists("/usr/local/share/wayland-sessions/ffxiv.desktop")
+        print(f"login session {'installed' if ok else 'not installed: run xiv install-session'}")
+    if m.get("flake", {}).get("autoUpdate"):
+        r = subprocess.run(["systemctl", "--user", "list-timers", "xiv-update.timer", "--no-legend"], capture_output=True, text=True)
+        print(f"auto-update   {r.stdout.split('  ')[0].strip() or 'timer not active'}")
     installed_dir = os.path.join(data_dir, "installedPlugins")
     installed = set(os.listdir(installed_dir)) if os.path.isdir(installed_dir) else set()
     _, _, cfg = load_config(data_dir)
@@ -547,21 +667,14 @@ def main(argv):
     VERBOSE = "--verbose" in argv
     args = [a for a in argv if a not in ("--dry-run", "--verbose")]
     default_manifest = os.path.expanduser("~/.config/xiv-nix/manifest.json")
-    if not args or args[0] in ("-h", "--help"):
+    if args and args[0] in ("-h", "--help", "help"):
         print(__doc__)
         return 0
-    if args[0] == "apply" and len(args) in (2, 3) and args[2:] in ([], ["--wait"]):
-        return cmd_apply(args[1], wait=args[2:] == ["--wait"])
-    if args[0] == "dev" and len(args) == 3:
-        return cmd_dev(default_manifest, args[1], args[2])
-    if args[0] == "release" and len(args) == 2:
-        return cmd_release(default_manifest, args[1])
-    if args[0] == "launch":
-        return cmd_launch(default_manifest, args[1:])
-    if args[0] == "doctor":
-        return cmd_doctor(args[1] if len(args) > 1 else default_manifest)
-    if args[0] == "update":
-        rest, flake, testing = args[1:], os.getcwd(), False
+    cmd, rest = (args[0], args[1:]) if args else ("launch", [])
+    if cmd == "apply" and len(rest) in (1, 2) and rest[1:] in ([], ["--wait"]):
+        return cmd_apply(rest[0], wait=rest[1:] == ["--wait"])
+    if cmd == "pins":
+        flake, testing = os.getcwd(), False
         if "--testing" in rest:
             rest.remove("--testing")
             testing = True
@@ -570,6 +683,30 @@ def main(argv):
             flake = rest[i + 1]
             del rest[i:i + 2]
         return cmd_update(flake, testing, rest)
+    if cmd == "doctor":
+        return cmd_doctor(rest[0] if rest else default_manifest)
+    m = json.load(open(default_manifest))
+    if cmd == "launch":
+        return cmd_launch(default_manifest, rest)
+    if cmd == "gamescope":
+        return cmd_gamescope(m, rest)
+    if cmd == "gpu-id":
+        gid = gpu_id(m)
+        if not gid:
+            log("no preferred GPU present")
+            return 1
+        print(gid)
+        return 0
+    if cmd == "switch":
+        return cmd_switch(m)
+    if cmd == "update":
+        return cmd_upgrade(m, auto="--auto" in rest)
+    if cmd == "install-session":
+        return cmd_install_session(m)
+    if cmd == "dev" and len(rest) == 2:
+        return cmd_dev(default_manifest, rest[0], rest[1])
+    if cmd == "release" and len(rest) == 1:
+        return cmd_release(default_manifest, rest[0])
     print(__doc__, file=sys.stderr)
     return 2
 

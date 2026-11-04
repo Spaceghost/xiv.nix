@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# Packaged by xiv.nix from ~/ffxiv-session-2026-09-19; @...@ are filled in by modules/xiv.nix.
+# ffxiv-session: GDM Wayland session whose only compositor is gamescope and
+# whose only client is XIVLauncher.Core -> FFXIV. Everything else graphical
+# lives headless inside ghostty-agent's ffxiv-0 compositor (systemd --user).
+#
+# Modes:
+#   ffxiv-session            outer: start gamescope on the monitor, run --client inside
+#   ffxiv-session --client   inner: run XIVLauncher, wait for launcher and game to exit
+#   DRY_RUN=1 ffxiv-session  print what would run; touches nothing but stdout
+#
+# Session ends (back to GDM) when the launcher and the game have both exited.
+# Consecutive short sessions (< FFXIV_SHORT_SECS) are counted; after
+# FFXIV_MAX_SHORT of them the session refuses to start and, if FFXIV is the
+# AccountsService default, resets the default so autologin cannot loop.
+set -uo pipefail
+
+: "${DRY_RUN:=0}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/ffxiv-session"
+CONF_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/ffxiv-session/env"
+
+# Defaults (override in $CONF_FILE, shell syntax KEY=value).
+FFXIV_OUTPUT="@output@"             # gamescope --prefer-output (programs.xiv.gamescope.output)
+FFXIV_VK_DEVICE=""                   # empty: the card xiv picks from programs.xiv.gpu.prefer
+FFXIV_WIDTH=""                       # empty: gamescope uses the monitor's preferred mode
+FFXIV_HEIGHT=""
+FFXIV_REFRESH=""
+FFXIV_GAMESCOPE_EXTRA="@extra@"      # programs.xiv.gamescope.args
+FFXIV_LAUNCHER_APP="dev.goats.xivlauncher"
+FFXIV_GAME_PATTERN='ffxiv_dx11\.exe'
+FFXIV_SHORT_SECS=60
+FFXIV_MAX_SHORT=3
+FFXIV_AGENT_UNIT="ffxiv-session.target"   # programs.xiv.session.wants
+XIV="@xiv@"
+FFXIV_KEEP_LOGS=10
+# shellcheck source=/dev/null
+[[ -f "$CONF_FILE" ]] && . "$CONF_FILE"
+
+log() { printf '%s ffxiv-session[%s]: %s\n' "$(date -Is)" "$$" "$*" >&2; }
+
+# run CMD...: execute, or print it under DRY_RUN.
+run() {
+	if [[ "$DRY_RUN" == 1 ]]; then
+		printf 'DRY_RUN:'; printf ' %q' "$@"; printf '\n'
+		return 0
+	fi
+	"$@"
+}
+
+set_default_session_back() {
+	local user_path cur
+	user_path="/org/freedesktop/Accounts/User$(id -u)"
+	cur=$(busctl get-property org.freedesktop.Accounts "$user_path" \
+		org.freedesktop.Accounts.User Session 2>/dev/null | sed -e 's/^s "//' -e 's/"$//')
+	if [[ "$cur" == ffxiv ]]; then
+		log "resetting AccountsService default session ffxiv -> gnome"
+		run busctl call org.freedesktop.Accounts "$user_path" \
+			org.freedesktop.Accounts.User SetSession s gnome || log "SetSession failed"
+	fi
+}
+
+client() {
+	# Env for the launcher/game process tree only (never exported to systemd --user).
+	export SDL_VIDEO_MINIMIZE_ON_FOCUS_LOSS=0
+	export VKD3D_SWAPCHAIN_LATENCY_FRAMES=3
+	export vk_xwayland_wait_ready=false
+	export QT_QPA_PLATFORM=xcb
+	# URL hook: BROWSER -> ghostty-agent --open-url, falling back to xdg-open.
+	# xdg-open inside flatpak goes through the OpenURI portal, which does not
+	# read BROWSER; see README "Links" for the ffxiv-mimeapps.list hook.
+	export BROWSER="$HOME/.local/bin/ffxiv-open-url"
+	# Where headless apps should go if anything in this tree spawns one.
+	export FFXIV_AGENT_WAYLAND_DISPLAY=ffxiv-0
+	export FFXIV_AGENT_X11_DISPLAY="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/ffxiv-0-x11"
+
+	log "client: DISPLAY=${DISPLAY:-} WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-}"
+	# GPU filter, CPU pinning and WINE_CPU_TOPOLOGY all come from xiv launch.
+	run "$XIV" launch &
+	local launcher=$!
+	[[ "$DRY_RUN" == 1 ]] && { wait "$launcher"; return 0; }
+
+	wait "$launcher"
+	local rc=$?
+	log "launcher exited rc=$rc"
+	# Launcher gone; if the game is still running (launcher crash, or launcher
+	# exits after spawning), keep the session until the game exits.
+	while pgrep -u "$(id -u)" -f "$FFXIV_GAME_PATTERN" >/dev/null; do
+		sleep 5
+	done
+	log "game not running; ending session"
+	return "$rc"
+}
+
+# Game-exit watcher: once the game has run and then been gone for 15s, stop the
+# launcher if it is still open, so the session ends with the game.
+watch_game() {
+	local seen=0 gone=0
+	while sleep 5; do
+		if pgrep -u "$(id -u)" -f "$FFXIV_GAME_PATTERN" >/dev/null; then
+			seen=1 gone=0
+		elif (( seen )); then
+			(( gone += 5 ))
+			if (( gone >= 15 )); then
+				log "game exited; stopping $FFXIV_LAUNCHER_APP"
+				flatpak kill "$FFXIV_LAUNCHER_APP" 2>/dev/null
+				return 0
+			fi
+		fi
+	done
+}
+
+outer() {
+	local tracker="$STATE_DIR/short-sessions" count=0 start rc
+	[[ -f "$tracker" ]] && count=$(wc -l <"$tracker")
+	if (( count >= FFXIV_MAX_SHORT )); then
+		log "$count consecutive short sessions; refusing to start (see $STATE_DIR)"
+		set_default_session_back
+		[[ "$DRY_RUN" == 1 ]] || rm -f "$tracker"
+		return 1
+	fi
+
+	run systemctl --user start "$FFXIV_AGENT_UNIT" || log "could not start $FFXIV_AGENT_UNIT (continuing)"
+
+	[[ -n "$FFXIV_VK_DEVICE" ]] || FFXIV_VK_DEVICE=$("$XIV" gpu-id) || { log "no usable GPU (see xiv doctor)"; return 1; }
+	local -a gs=(gamescope --backend drm -f --prefer-vk-device "$FFXIV_VK_DEVICE" --xwayland-count 1)
+	[[ -n "$FFXIV_OUTPUT" ]] && gs+=(--prefer-output "$FFXIV_OUTPUT")
+	[[ -n "$FFXIV_WIDTH" ]] && gs+=(-W "$FFXIV_WIDTH")
+	[[ -n "$FFXIV_HEIGHT" ]] && gs+=(-H "$FFXIV_HEIGHT")
+	[[ -n "$FFXIV_REFRESH" ]] && gs+=(-r "$FFXIV_REFRESH")
+	# shellcheck disable=SC2206 # intentional word splitting of extra flags
+	[[ -n "$FFXIV_GAMESCOPE_EXTRA" ]] && gs+=($FFXIV_GAMESCOPE_EXTRA)
+	gs+=(-- "$(readlink -f "$0")" --client)
+
+	export ENABLE_GAMESCOPE_WSI=1
+	export GAMESCOPE_DISABLE_ASYNC_FLIPS=1
+	ulimit -n 524288 2>/dev/null || true
+
+	start=$SECONDS
+	log "starting: ${gs[*]}"
+	run "${gs[@]}"
+	rc=$?
+	log "gamescope exited rc=$rc after $((SECONDS - start))s"
+
+	if [[ "$DRY_RUN" != 1 ]]; then
+		if (( SECONDS - start < FFXIV_SHORT_SECS )); then
+			echo "$(date -Is) rc=$rc" >>"$tracker"
+		else
+			rm -f "$tracker"
+		fi
+	fi
+	run systemctl --user stop "$FFXIV_AGENT_UNIT"   # stops the target only; ghostty-agent keeps running
+	return "$rc"
+}
+
+main() {
+	mkdir -p "$STATE_DIR"
+	if [[ "${1:-}" == --client ]]; then
+		if [[ "$DRY_RUN" != 1 ]]; then
+			watch_game &
+			local watcher=$!
+			client; local rc=$?
+			kill "$watcher" 2>/dev/null
+			return "$rc"
+		fi
+		client
+		return
+	fi
+	if [[ "$DRY_RUN" != 1 ]]; then
+		local logf
+		logf="$STATE_DIR/session-$(date +%Y%m%dT%H%M%S).log"
+		exec >>"$logf" 2>&1
+		ln -sfn "$logf" "$STATE_DIR/latest.log"
+		# prune old logs
+		find "$STATE_DIR" -maxdepth 1 -name 'session-*.log' -printf '%T@ %p\n' | sort -rn |
+			tail -n +"$((FFXIV_KEEP_LOGS + 1))" | cut -d' ' -f2- | xargs -r rm -f
+	fi
+	log "session start (XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-} XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-})"
+	outer
+	local rc=$?
+	if [[ "$DRY_RUN" == 1 && $rc -eq 0 ]]; then
+		log "DRY_RUN inner client would run:"
+		client
+	fi
+	log "session end rc=$rc"
+	return "$rc"
+}
+
+main "$@"

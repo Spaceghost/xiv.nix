@@ -13,6 +13,32 @@ let
 
   releasePkgs = import ../pkgs/plugins.nix { inherit (pkgs) lib stdenvNoCC fetchurl unzip; inherit pins; };
   xiv-nix = pkgs.callPackage ../pkgs/xiv-nix.nix { };
+  xiv = "${xiv-nix}/bin/xiv";
+
+  # The GDM session entry lives outside the store (root installs it once with
+  # `xiv install-session`), so it points at the profile path, which every
+  # switch updates in place.
+  sessionExec = "${config.home.profileDirectory}/bin/ffxiv-session";
+  ffxiv-session = pkgs.writeShellScriptBin "ffxiv-session"
+    (builtins.replaceStrings [ "@xiv@" "@output@" "@extra@" ]
+      [ xiv (if cfg.gamescope.output == null then "" else cfg.gamescope.output) (lib.concatStringsSep " " cfg.gamescope.args) ]
+      (builtins.readFile ../scripts/ffxiv-session));
+
+  desktopEntry = { name, exec, comment ? "", icon ? appIcon, terminal ? false, extra ? "" }: ''
+    [Desktop Entry]
+    Type=Application
+    Name=${name}
+    Comment=${comment}
+    Exec=${exec}
+    Icon=${icon}
+    Categories=Game;
+    Terminal=${lib.boolToString terminal}
+    ${extra}'';
+  appId = if cfg.launcher.kind == "flatpak" then cfg.launcher.flatpak.appId else "xivlauncher";
+  appIcon = appId;
+  # Terminal entries wait for Enter so the output stays readable. (Exec only
+  # honours double quotes.)
+  inTerminal = cmd: ''sh -c "${cmd}; echo; echo Press Enter to close; read -r _"'';
 
   pluginType = types.submodule ({ name, ... }: {
     options = {
@@ -35,7 +61,10 @@ let
   });
 
   manifest = {
-    inherit (cfg) dataDir thirdPartyPlugins gpu cpu;
+    inherit (cfg) dataDir thirdPartyPlugins gpu cpu gamescope;
+    self = xiv;
+    flake = { inherit (cfg.flake) dir attr push; autoUpdate = cfg.flake.autoUpdate.enable; };
+    session = { inherit (cfg.session) enable; exec = sessionExec; };
     launcher = {
       inherit (cfg.launcher) kind settings;
       flatpak = { inherit (cfg.launcher.flatpak) appId install remote env; };
@@ -107,6 +136,11 @@ in
           skipped when it is not. Sets DXVK_FILTER_DEVICE_NAME.
         '';
       };
+      strict = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Refuse to launch when no card in `prefer` is present, instead of letting DXVK pick (use it to keep a card reserved for something else).";
+      };
       offload = mkOption {
         type = types.enum [ "none" "nvidia" "mesa" ];
         default = "none";
@@ -116,6 +150,73 @@ in
           display-capable GPU is a discrete card.
         '';
       };
+    };
+
+    gamescope = {
+      output = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "HDMI-A-2,*";
+        description = "gamescope --prefer-output for `xiv gamescope` and the login session.";
+      };
+      args = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "--adaptive-sync" ];
+      };
+    };
+
+    session = {
+      enable = mkEnableOption ''
+        the "FFXIV" login-screen session (gamescope on the bare display, only
+        XIVLauncher and the game, back to the login screen on exit) and
+        ffxiv-session.target. Root installs the login entry once:
+        `xiv install-session`
+      '';
+      wants = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "ghostty-agent.service" ];
+        description = "User units ffxiv-session.target pulls in (Wants= + After=).";
+      };
+    };
+
+    flake = {
+      dir = mkOption {
+        type = types.str;
+        default = "${config.home.homeDirectory}/Projects/xiv.nix";
+        description = "Checkout of this flake; `xiv switch` / `xiv update` work there.";
+      };
+      attr = mkOption {
+        type = types.str;
+        description = "homeConfigurations attribute for this machine, e.g. jack@alienware.";
+      };
+      push = mkOption {
+        type = types.bool;
+        default = true;
+        description = "`xiv update` pushes its pins/lock commit.";
+      };
+      autoUpdate = {
+        enable = mkEnableOption "a user timer that runs `xiv update --auto`";
+        onCalendar = mkOption { type = types.str; default = "daily"; };
+      };
+    };
+
+    desktopFiles = mkOption {
+      type = types.attrsOf (types.submodule {
+        options = {
+          name = mkOption { type = types.str; };
+          icon = mkOption { type = types.nullOr types.str; default = null; };
+        };
+      });
+      default = { };
+      example = { "FINAL FANTASY XIV Online" = { name = "FINAL FANTASY XIV Online"; icon = "steam_icon_39210"; }; };
+      description = ''
+        Extra launcher entries (file basename -> name/icon) that run `xiv
+        launch`, typically to take over a Steam shortcut so it goes through
+        Dalamud and the GPU/CPU policy. Existing files are moved to
+        *.xivnix-bak by `xiv switch`.
+      '';
     };
 
     cpu = {
@@ -164,7 +265,9 @@ in
   };
 
   config = mkIf cfg.enable {
-    home.packages = [ xiv-nix ] ++ lib.optional (cfg.launcher.kind == "nix") pkgs.xivlauncher;
+    home.packages = [ xiv-nix ]
+      ++ lib.optional (cfg.launcher.kind == "nix") pkgs.xivlauncher
+      ++ lib.optional cfg.session.enable ffxiv-session;
 
     home.activation.xivNix = lib.hm.dag.entryAfter [ "writeBoundary" ] ''
       run ${xiv-nix}/bin/xiv-nix apply ${manifestFile} ''${DRY_RUN:+--dry-run} ''${VERBOSE:+--verbose}
@@ -172,23 +275,61 @@ in
 
     home.file.".config/xiv-nix/manifest.json".source = manifestFile;
 
-    # Same desktop-file id as the flatpak's export, written to
-    # ~/.local/share/applications (XDG_DATA_HOME beats every XDG_DATA_DIRS
-    # entry on any distro), so the menu and anything launching by id goes
-    # through xiv-nix launch.
-    xdg.dataFile = mkIf (cfg.launcher.kind != "none" && (cfg.gpu.prefer != [ ] || cfg.cpu.cores != null)) (
-      let id = if cfg.launcher.kind == "flatpak" then cfg.launcher.flatpak.appId else "xivlauncher";
-      in {
-        "applications/${id}.desktop".text = ''
-          [Desktop Entry]
-          Type=Application
-          Name=XIVLauncher
-          Comment=FINAL FANTASY XIV launcher (xiv.nix: GPU choice + CPU pinning)
-          Exec=${xiv-nix}/bin/xiv-nix launch
-          Icon=${id}
-          Categories=Game;
-          Terminal=false
-        '';
-      });
+    xdg.dataFile = mkIf (cfg.launcher.kind != "none") ({
+      # Same id as the flatpak's own entry; XDG_DATA_HOME beats every
+      # XDG_DATA_DIRS entry on any distro, so this one is what menus run.
+      "applications/${appId}.desktop".text = desktopEntry {
+        name = "XIVLauncher";
+        comment = "FINAL FANTASY XIV (Dalamud, preferred GPU, pinned CPUs)";
+        exec = "${xiv} launch";
+      };
+      "applications/xiv-gamescope.desktop".text = desktopEntry {
+        name = "FFXIV (gamescope)";
+        comment = "XIVLauncher full screen in gamescope";
+        exec = "${xiv} gamescope";
+      };
+      "applications/xiv-doctor.desktop".text = desktopEntry {
+        name = "FFXIV: check setup";
+        comment = "xiv doctor";
+        exec = inTerminal "${xiv} doctor";
+        terminal = true;
+      };
+      "applications/xiv-update.desktop".text = desktopEntry {
+        name = "FFXIV: update everything";
+        comment = "Bump plugin pins and flake.lock, rebuild, commit";
+        exec = inTerminal "${xiv} update";
+        terminal = true;
+      };
+      "applications/xiv-switch.desktop".text = desktopEntry {
+        name = "FFXIV: apply config";
+        comment = "xiv switch";
+        exec = inTerminal "${xiv} switch";
+        terminal = true;
+      };
+    } // lib.mapAttrs' (file: d: lib.nameValuePair "applications/${file}.desktop" {
+      text = desktopEntry { inherit (d) name; exec = "${xiv} launch"; icon = if d.icon == null then appIcon else d.icon; };
+    }) cfg.desktopFiles);
+
+    systemd.user.targets.ffxiv-session = mkIf cfg.session.enable {
+      Unit = {
+        Description = "FFXIV session (gamescope + XIVLauncher via xiv launch)";
+        Wants = cfg.session.wants;
+        After = cfg.session.wants;
+      };
+    };
+
+    systemd.user.services.xiv-update = mkIf cfg.flake.autoUpdate.enable {
+      Unit.Description = "xiv update: bump FFXIV plugin pins + flake.lock, switch, commit, push";
+      Service = {
+        Type = "oneshot";
+        ExecStart = "${xiv} update --auto";
+        Environment = [ "PATH=${config.home.profileDirectory}/bin:/nix/var/nix/profiles/default/bin:/run/current-system/sw/bin:/usr/local/bin:/usr/bin:/bin" ];
+      };
+    };
+    systemd.user.timers.xiv-update = mkIf cfg.flake.autoUpdate.enable {
+      Unit.Description = "Daily FFXIV plugin/flake update";
+      Timer = { OnCalendar = cfg.flake.autoUpdate.onCalendar; Persistent = true; RandomizedDelaySec = "1h"; };
+      Install.WantedBy = [ "timers.target" ];
+    };
   };
 }

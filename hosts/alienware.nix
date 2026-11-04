@@ -31,9 +31,25 @@
       };
     };
 
-    # Two NVIDIA cards (RTX 3070 at 02:00.0, RTX 4060 at 03:00.0, not always
-    # both present): the first one found at launch runs the game.
-    gpu.prefer = [ "RTX 3070" "RTX 4060" ];
+    # Two NVIDIA cards: RTX 3070 (02:00.0, drives the monitor) and RTX 4060
+    # (03:00.0, reserved for ollama). The game only ever runs on the 3070;
+    # strict = refuse to launch rather than fall back to the 4060.
+    gpu.prefer = [ "RTX 3070" ];
+    gpu.strict = true;
+
+    gamescope.output = "HDMI-A-2,*"; # connector on the 3070 with the monitor
+
+    # "FFXIV" at the login screen (once: xiv install-session) + ffxiv-session.target.
+    session.enable = true;
+    session.wants = [ "ghostty-agent.service" ];
+
+    # xiv switch / xiv update work on this checkout; a daily timer runs
+    # xiv update --auto (pins + flake.lock -> switch -> commit -> push).
+    flake.attr = "jack@alienware";
+    flake.autoUpdate.enable = true;
+
+    # Steam's shortcut goes through Dalamud and the GPU/CPU policy too.
+    desktopFiles."FINAL FANTASY XIV Online" = { name = "FINAL FANTASY XIV Online"; icon = "steam_icon_39210"; };
 
     # i7-11700F, 8 cores / 16 threads: game gets cores 0-3 + siblings
     # (CPUs 0-3,8-11), leaving the other half for builds and local models.

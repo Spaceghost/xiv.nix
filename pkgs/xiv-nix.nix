@@ -1,9 +1,17 @@
-{ writeShellApplication, python3, pciutils }:
+{ writeShellApplication, symlinkJoin, python3, pciutils }:
 
-writeShellApplication {
+let
+  xiv = writeShellApplication {
+    name = "xiv";
+    runtimeInputs = [ python3 pciutils ];
+    text = ''
+      exec python3 -I ${../scripts/xiv-nix.py} "$@"
+    '';
+  };
+in
+# `xiv` is the everyday command; `xiv-nix` stays as an alias.
+symlinkJoin {
   name = "xiv-nix";
-  runtimeInputs = [ python3 pciutils ];
-  text = ''
-    exec python3 -I ${../scripts/xiv-nix.py} "$@"
-  '';
+  paths = [ xiv ];
+  postBuild = "ln -s xiv $out/bin/xiv-nix";
 }
