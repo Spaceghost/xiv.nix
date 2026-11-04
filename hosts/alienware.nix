@@ -70,9 +70,9 @@
       XivHud = { };
       "XivHud.Journal" = { };
       XivRug = { };
-      # No source repo or release yet: keep loading the local builds.
+      XivWorkshop = { };
+      # Source not recovered yet (it is on fedora): keep loading the local build.
       XivLinkpearl = { source = "local"; path = "/home/jack/linkpearl-build/devplugin"; };
-      XivWorkshop = { source = "local"; path = "/home/jack/dalamud-plugins/XivWorkshop"; };
     };
 
     # Off: every plugin it serves is declared above and loads from a local copy.

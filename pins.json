@@ -56,5 +56,10 @@
     "tag": "testing",
     "asset": "XivRug-0.0.1.3.zip",
     "hash": "sha256-ImLSQlcpXiTxE1jpOMq97XfSEvQos31s80Pz3DXu4vI="
+  },
+  "XivWorkshop": {
+    "repo": "Spaceghost/xiv-workshop",
+    "tag": "v0.1.0",
+    "hash": "sha256-1N7nb7JZLQtxFt5DLDPgLsk3izTvylWX8F6W3pxOOjQ="
   }
 }
