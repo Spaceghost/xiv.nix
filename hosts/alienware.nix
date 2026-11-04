@@ -39,10 +39,12 @@
 
     gamescope.output = "HDMI-A-2,*"; # connector on the 3070 with the monitor
 
-    # Plugin connects to 127.0.0.1:7777 (pluginConfigs/GhosttyDalamud/lua/init.lua).
+    # Plugin connects to 127.0.0.1:7777 (pluginConfigs/GhosttyDalamud/lua/init.lua);
+    # other machines reach the same agent on the tailnet address.
     # Source build in ~/.local/bin (has the Wayland compositor); it renders on the 3070.
     ghosttyAgent = {
       enable = true;
+      listen = [ "127.0.0.1:7777" "100.83.231.2:7777" ]; # this machine + the tailnet
       windows = "wayland";
       renderNode = "/dev/dri/by-path/pci-0000:02:00.0-render";
     };

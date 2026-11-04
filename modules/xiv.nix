@@ -214,9 +214,14 @@ in
         '';
       };
       listen = mkOption {
-        type = types.str;
-        default = "127.0.0.1:7777";
-        description = "HOST:PORT. Must match agent.host/port in pluginConfigs/GhosttyDalamud/lua/init.lua.";
+        type = types.coercedTo types.str lib.toList (types.nonEmptyListOf types.str);
+        default = [ "127.0.0.1:7777" ];
+        example = [ "127.0.0.1:7777" "100.83.231.2:7777" ];
+        description = ''
+          HOST:PORT addresses (agent 0.3.2+ takes several). The first must match
+          agent.host/port in pluginConfigs/GhosttyDalamud/lua/init.lua; later
+          ones (a tailnet address) are retried until they can be opened.
+        '';
       };
       windows = mkOption {
         type = types.nullOr types.str;
@@ -356,7 +361,7 @@ in
         After = [ "graphical-session.target" ];
       };
       Service = {
-        ExecStart = lib.concatStringsSep " " ([ cfg.ghosttyAgent.binary "--listen" cfg.ghosttyAgent.listen ]
+        ExecStart = lib.concatStringsSep " " (([ cfg.ghosttyAgent.binary ] ++ lib.concatMap (l: [ "--listen" l ]) cfg.ghosttyAgent.listen)
           ++ lib.optionals (cfg.ghosttyAgent.windows != null) [ "--windows" cfg.ghosttyAgent.windows ]
           ++ cfg.ghosttyAgent.extraArgs);
         Environment = [ "PATH=%h/.local/bin:%h/bin:${config.home.profileDirectory}/bin:/usr/local/bin:/usr/bin:/bin" ]
