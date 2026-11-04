@@ -52,10 +52,12 @@ xiv.nix never fights your dev loop:
 
 ## Installing Nix
 
-- **Bazzite / Fedora Atomic / other ostree systems:** `/` is read-only, so use the Determinate installer's ostree planner. It persists the store under `/var` and bind-mounts it at `/nix`:
+- **Bazzite / Fedora Atomic / other ostree systems:** `/` is read-only, so use the Determinate installer's ostree planner. It persists the store under `/var` and bind-mounts it at `/nix`. On composefs roots (Bazzite, Fedora Atomic 42+), the installer fails at `nix.mount`, because `chattr` isn't supported and `/nix` can't be created. Prepare first:
   ```sh
-  curl -fsSL https://install.determinate.systems/nix | sh -s -- install ostree
+  sudo scripts/ostree-nix-prep.sh   # root.transient=true + chattr drop-in; reboot if it says so
+  curl -fsSL https://install.determinate.systems/nix | sh -s -- install ostree --no-confirm
   ```
+  Run it in a real terminal: the installer needs a TTY for sudo.
 - **Other distros:** use the same installer without `ostree`.
 - **NixOS:** use the flake's `homeModules.default` from your own config.
 
