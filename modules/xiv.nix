@@ -35,7 +35,7 @@ let
   });
 
   manifest = {
-    inherit (cfg) dataDir thirdPartyPlugins;
+    inherit (cfg) dataDir thirdPartyPlugins gpu cpu;
     launcher = {
       inherit (cfg.launcher) kind settings;
       flatpak = { inherit (cfg.launcher.flatpak) appId install remote env; };
@@ -95,6 +95,47 @@ in
       };
     };
 
+    gpu = {
+      prefer = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "RTX 4060" "RTX 3070" ];
+        description = ''
+          Cards to run the game on, best first, matched as substrings of the
+          PCI name. Checked at every launch, so a card that is only sometimes
+          present (eGPU, Graphics Amplifier) is used when it is there and
+          skipped when it is not. Sets DXVK_FILTER_DEVICE_NAME.
+        '';
+      };
+      offload = mkOption {
+        type = types.enum [ "none" "nvidia" "mesa" ];
+        default = "none";
+        description = ''
+          Hybrid laptops: nvidia = PRIME render offload env vars; mesa =
+          DRI_PRIME pointing at the chosen card. Leave none when every
+          display-capable GPU is a discrete card.
+        '';
+      };
+    };
+
+    cpu = {
+      cores = mkOption {
+        type = types.nullOr (types.either (types.enum [ "half" ]) (types.listOf types.int));
+        default = null;
+        example = "half";
+        description = ''
+          Pin XIVLauncher, Wine and the game to these logical CPUs. "half" =
+          half the physical cores (P-cores first on hybrid CPUs) plus their
+          SMT siblings, worked out on the machine at launch time.
+        '';
+      };
+      wineTopology = mkOption {
+        type = types.bool;
+        default = true;
+        description = "Also set WINE_CPU_TOPOLOGY so the game sizes its thread pools to the pinned set.";
+      };
+    };
+
     plugins = mkOption {
       type = types.attrsOf pluginType;
       default = { };
@@ -130,5 +171,24 @@ in
     '';
 
     home.file.".config/xiv-nix/manifest.json".source = manifestFile;
+
+    # Same desktop-file id as the flatpak's export, written to
+    # ~/.local/share/applications (XDG_DATA_HOME beats every XDG_DATA_DIRS
+    # entry on any distro), so the menu and anything launching by id goes
+    # through xiv-nix launch.
+    xdg.dataFile = mkIf (cfg.launcher.kind != "none" && (cfg.gpu.prefer != [ ] || cfg.cpu.cores != null)) (
+      let id = if cfg.launcher.kind == "flatpak" then cfg.launcher.flatpak.appId else "xivlauncher";
+      in {
+        "applications/${id}.desktop".text = ''
+          [Desktop Entry]
+          Type=Application
+          Name=XIVLauncher
+          Comment=FINAL FANTASY XIV launcher (xiv.nix: GPU choice + CPU pinning)
+          Exec=${xiv-nix}/bin/xiv-nix launch
+          Icon=${id}
+          Categories=Game;
+          Terminal=false
+        '';
+      });
   };
 }

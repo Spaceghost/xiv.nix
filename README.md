@@ -30,6 +30,23 @@ xiv-nix update --flake ~/Projects/xiv.nix --testing XivPiano   # newest release 
 
 After `update`, commit `pins.json` and run `switch` again. `nix flake update` bumps nixpkgs and home-manager.
 
+## GPU choice and CPU pinning
+
+```nix
+programs.xiv.gpu.prefer = [ "RTX 3070" "RTX 4060" ];  # first card present at launch wins
+programs.xiv.gpu.offload = "none";                     # "nvidia" / "mesa" for hybrid laptops
+programs.xiv.cpu.cores = "half";                       # or [ 0 1 2 3 8 9 10 11 ]
+```
+
+These are decided at every launch, not at switch time, so a card that's only sometimes connected is handled. `xiv-nix launch` does the following:
+- Picks the first preferred card in `lspci` and sets `DXVK_FILTER_DEVICE_NAME` to it. If none is present, it clears the filter and lets DXVK choose.
+- Pins itself with `sched_setaffinity`. Flatpak, Wine, Dalamud and the game inherit that pinning.
+- Sets `WINE_CPU_TOPOLOGY` so the game sees only the pinned CPUs.
+
+`"half"` takes half the physical cores, P-cores first on hybrid Intel, along with their SMT siblings.
+
+When a policy is set, the module writes an XIVLauncher menu entry with the flatpak's own id to `~/.local/share/applications`, so it replaces the flatpak's entry. Anything that runs `flatpak run dev.goats.xivlauncher` directly bypasses this, so point scripts at `xiv-nix launch` instead. `xiv-nix doctor` shows the cards present, which one the game will use, and the pinned CPUs.
+
 ## Working on a plugin
 
 xiv.nix never fights your dev loop:
@@ -64,4 +81,6 @@ xiv.nix never fights your dev loop:
 ## Status
 
 - **Verified:** `nix flake check` builds every pinned plugin and the alienware activation package. `scripts/xiv-nix.py` ran against a copy of the real config: adoption, idempotence, backups, a toggle kept, a dev override winning, `dev`/`release`, and the deferred apply through a real `systemd-run` unit waiting on a process named `ffxiv_dx11.exe`.
+- **`xiv-nix launch`:** checked with a stub `flatpak`. It passed the chosen card and `WINE_CPU_TOPOLOGY`, with affinity `0-3,8-11` on the i7-11700F.
+- **Not yet verified:** whether the XIV Wine build honours `WINE_CPU_TOPOLOGY` (wine-staging and Proton do).
 - **Not yet verified:** an actual `home-manager switch` on the alienware box, and a game launch with the plugins loaded from `xivnix/plugins`. Treat both as unproven until they have been run there.

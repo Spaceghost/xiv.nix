@@ -16,7 +16,6 @@
     launcher = {
       kind = "flatpak";
       flatpak.install = false; # Bazzite ships it as a system flatpak
-      flatpak.env.DXVK_FILTER_DEVICE_NAME = "RTX 3070";
       settings = {
         GamePath = "/home/jack/Games/SteamLibrary/steamapps/common/FINAL FANTASY XIV Online/";
         ClientLanguage = "English";
@@ -31,6 +30,14 @@
         GameModeEnabled = false;
       };
     };
+
+    # Two NVIDIA cards (RTX 3070 at 02:00.0, RTX 4060 at 03:00.0, not always
+    # both present): the first one found at launch runs the game.
+    gpu.prefer = [ "RTX 3070" "RTX 4060" ];
+
+    # i7-11700F, 8 cores / 16 threads: game gets cores 0-3 + siblings
+    # (CPUs 0-3,8-11), leaving the other half for builds and local models.
+    cpu.cores = "half";
 
     # Your plugins. "release" = pinned in pins.json, bumped with `xiv-nix update`.
     # To test a dev build instead: source = "local"; path = "/home/jack/<name>-build/devplugin";

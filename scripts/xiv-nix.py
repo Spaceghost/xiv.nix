@@ -2,11 +2,12 @@
 
   xiv-nix apply MANIFEST [--wait] [--dry-run] [--verbose]
   xiv-nix doctor [MANIFEST]
+  xiv-nix launch [ARGS...]  start XIVLauncher on the preferred GPU, pinned to the configured CPUs
   xiv-nix dev NAME DIR      load your own build of NAME from DIR (kept across switches)
   xiv-nix release NAME      drop that override, back to the managed copy
   xiv-nix update [--flake DIR] [--testing] [NAME ...]
 """
-import base64, datetime, hashlib, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
+import base64, datetime, glob, hashlib, json, os, shlex, shutil, subprocess, sys, tempfile, time, urllib.request
 
 DEV_TYPE = "System.Collections.Generic.List`1[[Dalamud.Configuration.DevPluginLocationSettings, Dalamud]], System.Private.CoreLib"
 DEV_ITEM = "Dalamud.Configuration.DevPluginLocationSettings, Dalamud"
@@ -300,6 +301,117 @@ def cmd_apply(manifest_path, wait=False):
     return 0
 
 
+# ---- launch: GPU choice and CPU pinning, decided at start time ----------------
+
+def parse_cpu_list(text):
+    cpus = set()
+    for part in text.strip().split(","):
+        if "-" in part:
+            a, b = part.split("-")
+            cpus.update(range(int(a), int(b) + 1))
+        elif part:
+            cpus.add(int(part))
+    return cpus
+
+
+def pci_gpus():
+    """[(pci address, human name)] for every display-class PCI device present now."""
+    out = []
+    for d in sorted(glob.glob("/sys/bus/pci/devices/*")):
+        try:
+            if not open(os.path.join(d, "class")).read().startswith("0x03"):
+                continue
+        except OSError:
+            continue
+        addr, name = os.path.basename(d), os.path.basename(d)
+        if shutil.which("lspci"):
+            r = subprocess.run(["lspci", "-mm", "-s", addr], capture_output=True, text=True)
+            fields = shlex.split(r.stdout) if r.returncode == 0 else []
+            if len(fields) >= 4:
+                name = f"{fields[2]} {fields[3]}"
+        out.append((addr, name))
+    return out
+
+
+def pick_gpu(prefer):
+    """First entry of `prefer` that matches a card present right now."""
+    gpus = pci_gpus()
+    for want in prefer:
+        for addr, name in gpus:
+            if want.lower() in name.lower():
+                return want, addr, name
+    return None
+
+
+def cpu_set(spec):
+    """None, an explicit list, or "half": half the physical cores (P-cores
+    first on hybrid CPUs) with all their SMT siblings."""
+    allowed = os.sched_getaffinity(0)
+    if spec is None:
+        return None
+    if isinstance(spec, list):
+        return sorted(set(spec) & allowed) or None
+    pcores = None
+    if os.path.exists("/sys/devices/cpu_core/cpus"):
+        pcores = parse_cpu_list(open("/sys/devices/cpu_core/cpus").read())
+    cores = {}
+    for cpu in sorted(allowed):
+        topo = f"/sys/devices/system/cpu/cpu{cpu}/topology"
+        try:
+            key = (open(f"{topo}/physical_package_id").read().strip(), open(f"{topo}/core_id").read().strip(),
+                   pcores is not None and cpu in pcores)
+        except OSError:
+            key = ("?", str(cpu), False)
+        cores.setdefault(key, []).append(cpu)
+    groups = sorted(cores.items(), key=lambda kv: (not kv[0][2], min(kv[1])))
+    take = max(1, (len(groups) + 1) // 2)
+    return sorted(c for _, g in groups[:take] for c in g)
+
+
+def launch_plan(m):
+    env, notes = {}, []
+    gpu = m.get("gpu", {})
+    prefer = gpu.get("prefer", [])
+    if prefer:
+        hit = pick_gpu(prefer)
+        if hit:
+            want, addr, name = hit
+            env["DXVK_FILTER_DEVICE_NAME"] = want
+            notes.append(f"gpu {name} ({addr})")
+            if gpu.get("offload") == "mesa":
+                env["DRI_PRIME"] = "pci-" + addr.replace(":", "_").replace(".", "_")
+        else:
+            env["DXVK_FILTER_DEVICE_NAME"] = ""  # none present: clear any stale override, let DXVK choose
+            notes.append(f"gpu: none of {prefer} present, DXVK picks")
+    if gpu.get("offload") == "nvidia":
+        env.update({"__NV_PRIME_RENDER_OFFLOAD": "1", "__VK_LAYER_NV_optimus": "NVIDIA_only",
+                    "__GLX_VENDOR_LIBRARY_NAME": "nvidia"})
+    cpu = m.get("cpu", {})
+    cpus = cpu_set(cpu.get("cores"))
+    if cpus:
+        notes.append(f"cpus {','.join(map(str, cpus))}")
+        if cpu.get("wineTopology", True):
+            env["WINE_CPU_TOPOLOGY"] = f"{len(cpus)}:{','.join(map(str, cpus))}"
+    return env, cpus, notes
+
+
+def cmd_launch(manifest_path, args):
+    m = json.load(open(manifest_path))
+    env, cpus, notes = launch_plan(m)
+    log("launch: " + ("; ".join(notes) or "no gpu/cpu policy"))
+    if cpus:
+        os.sched_setaffinity(0, cpus)  # inherited by flatpak, wine, and the game
+    kind = m["launcher"]["kind"]
+    if kind == "flatpak":
+        argv = ["flatpak", "run", *[f"--env={k}={v}" for k, v in env.items()], m["launcher"]["flatpak"]["appId"], *args]
+        os.execvp("flatpak", argv)
+    if kind == "nix":
+        os.environ.update(env)
+        os.execvp("XIVLauncher.Core", ["XIVLauncher.Core", *args])
+    log("launcher.kind = none; nothing to launch")
+    return 1
+
+
 # ---- doctor ----------------------------------------------------------------
 
 def cmd_doctor(manifest_path):
@@ -311,6 +423,14 @@ def cmd_doctor(manifest_path):
         state = flatpak_installed(m["launcher"]["flatpak"]["appId"])
         print(f"launcher      flatpak {m['launcher']['flatpak']['appId']}: {'installed' if state else 'MISSING'}")
         bad += not state
+    env, cpus, _ = launch_plan(m)
+    chosen = env.get("DXVK_FILTER_DEVICE_NAME")
+    for addr, name in pci_gpus():
+        mark = "  <- game" if chosen and chosen.lower() in name.lower() else ""
+        print(f"gpu           {addr} {name}{mark}")
+    if chosen == "":
+        print("gpu           ! no preferred card present; DXVK picks")
+    print(f"cpu pin       {','.join(map(str, cpus)) if cpus else 'all'}")
     installed_dir = os.path.join(data_dir, "installedPlugins")
     installed = set(os.listdir(installed_dir)) if os.path.isdir(installed_dir) else set()
     _, _, cfg = load_config(data_dir)
@@ -436,6 +556,8 @@ def main(argv):
         return cmd_dev(default_manifest, args[1], args[2])
     if args[0] == "release" and len(args) == 2:
         return cmd_release(default_manifest, args[1])
+    if args[0] == "launch":
+        return cmd_launch(default_manifest, args[1:])
     if args[0] == "doctor":
         return cmd_doctor(args[1] if len(args) > 1 else default_manifest)
     if args[0] == "update":
