@@ -202,6 +202,37 @@ in
       };
     };
 
+    ghosttyAgent = {
+      enable = mkEnableOption "the ghostty-agent user service the GhosttyDalamud plugin connects to";
+      binary = mkOption {
+        type = types.str;
+        default = "%h/.local/bin/ghostty-agent";
+        description = ''
+          The agent executable. The release tarball's build has no Wayland
+          compositor; a source build (tools/build-agent.sh) or the distro
+          package has it.
+        '';
+      };
+      listen = mkOption {
+        type = types.str;
+        default = "127.0.0.1:7777";
+        description = "HOST:PORT. Must match agent.host/port in pluginConfigs/GhosttyDalamud/lua/init.lua.";
+      };
+      windows = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "wayland";
+        description = "--windows backend for remote desktop windows.";
+      };
+      renderNode = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "/dev/dri/by-path/pci-0000:02:00.0-render";
+        description = "GHOSTTY_WAYLAND_RENDER_NODE: the GPU the compositor renders on (by-path names survive reboots).";
+      };
+      extraArgs = mkOption { type = types.listOf types.str; default = [ ]; };
+    };
+
     desktopFiles = mkOption {
       type = types.attrsOf (types.submodule {
         options = {
@@ -316,6 +347,25 @@ in
         Wants = cfg.session.wants;
         After = cfg.session.wants;
       };
+    };
+
+    systemd.user.services.ghostty-agent = mkIf cfg.ghosttyAgent.enable {
+      Unit = {
+        Description = "ghostty-agent, the PTY server the GhosttyDalamud plugin talks to";
+        Documentation = "https://github.com/Spaceghost/ghostty-dalamud#linux";
+        After = [ "graphical-session.target" ];
+      };
+      Service = {
+        ExecStart = lib.concatStringsSep " " ([ cfg.ghosttyAgent.binary "--listen" cfg.ghosttyAgent.listen ]
+          ++ lib.optionals (cfg.ghosttyAgent.windows != null) [ "--windows" cfg.ghosttyAgent.windows ]
+          ++ cfg.ghosttyAgent.extraArgs);
+        Environment = [ "PATH=%h/.local/bin:%h/bin:${config.home.profileDirectory}/bin:/usr/local/bin:/usr/bin:/bin" ]
+          ++ lib.optional (cfg.ghosttyAgent.renderNode != null) "GHOSTTY_WAYLAND_RENDER_NODE=${cfg.ghosttyAgent.renderNode}";
+        Restart = "on-failure";
+        RestartSec = 5;
+        TimeoutStopSec = 10;
+      };
+      Install.WantedBy = [ "default.target" ];
     };
 
     systemd.user.services.xiv-update = mkIf cfg.flake.autoUpdate.enable {

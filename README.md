@@ -9,6 +9,7 @@ FFXIV on Linux as a Home Manager module: XIVLauncher, the Dalamud config, and yo
 | XIVLauncher | Flatpak by default (`launcher.kind = "flatpak"`): installs `dev.goats.xivlauncher` if it is missing and merges `[Environment]` into the user flatpak override. `kind = "nix"` uses `pkgs.xivlauncher` instead. |
 | `launcher.ini` | Only the keys in `launcher.settings` are enforced. Everything else is left as XIVLauncher wrote it. |
 | Your plugins | `source = "release"`: the `latest.zip` from the GitHub release pinned in `pins.json` (or, for testing-only releases, the versioned `asset` the pin names, e.g. `XivHud-0.1.0.3.zip`). It is fetched into the Nix store and copied to `<dataDir>/xivnix/plugins/<Name>`. `source = "local"`: load your own dev build from `path`. Both are registered as Dalamud dev-plugin locations named `xiv.nix:<Name>`. |
+| ghostty-agent | `ghosttyAgent.enable`: the user service GhosttyDalamud connects to (`listen`, default `127.0.0.1:7777`), with `windows` and the compositor's GPU (`renderNode`). |
 | Third-party repos | `ThirdRepoList` entries by URL. |
 | Third-party plugins | Dalamud installs and auto-updates these itself. `thirdPartyPlugins` is the expected list, and `xiv doctor` names the missing ones. |
 

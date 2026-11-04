@@ -39,6 +39,14 @@
 
     gamescope.output = "HDMI-A-2,*"; # connector on the 3070 with the monitor
 
+    # Plugin connects to 127.0.0.1:7777 (pluginConfigs/GhosttyDalamud/lua/init.lua).
+    # Source build in ~/.local/bin (has the Wayland compositor); it renders on the 3070.
+    ghosttyAgent = {
+      enable = true;
+      windows = "wayland";
+      renderNode = "/dev/dri/by-path/pci-0000:02:00.0-render";
+    };
+
     # "FFXIV" at the login screen (once: xiv install-session) + ffxiv-session.target.
     session.enable = true;
     session.wants = [ "ghostty-agent.service" ];
