@@ -71,9 +71,7 @@
       XivWorkshop = { source = "local"; path = "/home/jack/dalamud-plugins/XivWorkshop"; };
     };
 
-    # Off on purpose: enabling it offers repo copies of the plugins above,
-    # which collide with the dev-loaded ones (same InternalName).
-    thirdPartyRepos = [ { url = "https://spacegho.st/mods/ffxiv/plugins.json"; enable = false; } ];
+    thirdPartyRepos = [ { url = "https://spacegho.st/mods/ffxiv/plugins.json"; enable = true; } ];
 
     thirdPartyPlugins = [
       "AdaptiveHud" "BetterFriendList" "Browsingway" "CharacterPanelRefined" "ChatProximity"
